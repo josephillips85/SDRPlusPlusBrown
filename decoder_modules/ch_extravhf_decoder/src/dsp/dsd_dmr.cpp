@@ -28,15 +28,22 @@ namespace dsp {
                 dmrlc_bits[(i * 2)]     = (1 & (d >> 1)); // bit 1
                 dmrlc_bits[(i * 2) + 1] = (1 & d);        // bit 0
             }
+            dmrBurstSlot = currentslot;
+            // Start of the Slot Type field (CC(4) + Data Type(4) + first 2
+            // parity bits of its Golay(20,8) codeword). Remembered so the
+            // full 20-bit codeword can be re-read and FEC-corrected once its
+            // mirrored tail (after the sync field) has streamed in.
+            dmrSlotType1Pos = dmr_dibitBuffP;
+
             int dibit = dibitBuf[dmr_dibitBuffP++];
-            cc |= ((1 & (dibit >> 1))) << 0; //bit1
-            cc |= (1 & dibit) << 1;     // bit 0
+            cc |= (1 & (dibit >> 1)) << 3; // bit 1 (received first -> CC MSB)
+            cc |= (1 & dibit) << 2;        // bit 0
 
             dibit = dibitBuf[dmr_dibitBuffP++];
-            cc |= (1 & (dibit >> 1)) << 2;      // bit 1
-            cc |= (1 & dibit) << 3;     // bit 0
+            cc |= (1 & (dibit >> 1)) << 1; // bit 1
+            cc |= (1 & dibit) << 0;        // bit 0 (received last -> CC LSB)
 
-            dmr_status.dmr_status_cc = cc;
+            ((currentslot == 0) ? dmr_status.dmr_status_s0_cc : dmr_status.dmr_status_s1_cc) = cc;
 
             dibit = dibitBuf[dmr_dibitBuffP++];
             bursttype[0] = (1 & (dibit >> 1)) + 48;       // bit 1
@@ -117,6 +124,12 @@ namespace dsp {
                 usedDibits++;
                 skipCtr++;
                 if(skipCtr == 120) {
+                    // The mirrored tail of the Slot Type field (5 dibits / 10
+                    // bits) has now streamed in at dmrlc_afterSyncPos; use it
+                    // together with the head captured at dmrSlotType1Pos to
+                    // FEC-correct the Colour Code / Data Type with Golay(20,8).
+                    processDMRSlotType(dmrBurstSlot);
+
                     if (dmrlc_pending) {
                         // Skip the 5 remaining dibits (10 bits) of the mirrored
                         // Slot Type field, then read Data2 (49 dibits = 98 bits).
@@ -263,8 +276,9 @@ namespace dsp {
     // Decode a Voice LC Header (dtype==1) or Terminator-with-LC (dtype==2)
     // burst's payload into the talkgroup/private-call and source id fields.
     // NOTE: the RS(12,9) parity carried in lc[9..11] is not checked here, so
-    // this is a best-effort decode (consistent with the rest of this file,
-    // which also doesn't verify the Slot Type's Golay(20,8) parity).
+    // this is a best-effort decode of the LC content itself - though the
+    // Slot Type (Data Type) that got us here *is* now Golay(20,8)-corrected,
+    // see processDMRSlotType() below.
     void NewDSD::processDMRFullLC(int dtype, int slot) {
         uint8_t lc[12];
         dmrBptcDecode(dmrlc_bits, lc);
@@ -291,6 +305,87 @@ namespace dsp {
             dmr_status.dmr_status_s1_group = group;
             dmr_status.dmr_status_s1_tgid = dst;
             dmr_status.dmr_status_s1_srcid = src;
+        }
+
+        // Log only when the talkgroup/destination actually changes, so this
+        // doesn't spam once per Voice Header + once per Terminator of every
+        // single call.
+        if (dst != dmrLoggedTG[slot]) {
+            dmrLoggedTG[slot] = dst;
+            if (group) {
+                flog::info("DMR slot{} TG {} (src {})", slot, dst, src);
+            } else {
+                flog::info("DMR slot{} DIRECT -> {} (src {})", slot, dst, src);
+            }
+        }
+    }
+
+    std::string NewDSD::dmrDataTypeName(int dataType) {
+        switch (dataType) {
+            case 0:  return "PI Header";
+            case 1:  return "VOICE Header";
+            case 2:  return "TLC";
+            case 3:  return "CSBK";
+            case 4:  return "MBC Header";
+            case 5:  return "MBC";
+            case 6:  return "DATA Header";
+            case 7:  return "RATE 1/2 DATA";
+            case 8:  return "RATE 3/4 DATA";
+            case 9:  return "Idle";
+            case 10: return "RATE 1 DATA";
+            default: return "UNK";
+        }
+    }
+
+    // Reconstruct the 20-bit Slot Type Golay(20,8,7) codeword from its two
+    // halves (10 bits captured right after Data1, 10 bits mirrored right
+    // after the sync field) and FEC-correct the Colour Code / Data Type,
+    // overwriting the provisional (uncorrected) values read earlier. This
+    // is what prevents a single bit error from flipping the reported CC or
+    // burst type into a bogus value.
+    void NewDSD::processDMRSlotType(int slot) {
+        bool stBits[20];
+        for (int i = 0; i < 5; i++) {
+            int d = dibitBuf[dmrSlotType1Pos + i];
+            stBits[i * 2]     = (1 & (d >> 1));
+            stBits[i * 2 + 1] = (1 & d);
+        }
+        for (int i = 0; i < 5; i++) {
+            int d = dibitBuf[dmrlc_afterSyncPos + i];
+            stBits[10 + (i * 2)]     = (1 & (d >> 1));
+            stBits[10 + (i * 2) + 1] = (1 & d);
+        }
+
+        uint8_t data[3] = { 0, 0, 0 };
+        for (int i = 0; i < 8; i++) {
+            data[0] = (uint8_t)((data[0] << 1) | (stBits[i] ? 1 : 0));
+        }
+        for (int i = 0; i < 8; i++) {
+            data[1] = (uint8_t)((data[1] << 1) | (stBits[8 + i] ? 1 : 0));
+        }
+        // Only the top 3 bits of data[2] participate in the Golay(20,8)
+        // check (see Golay2087::decode) - the 20th received bit is unused.
+        data[2] = (uint8_t)((stBits[16] << 7) | (stBits[17] << 6) | (stBits[18] << 5));
+
+        uint8_t corrected = Golay2087::decode(data);
+        uint8_t cc = corrected >> 4;
+        uint8_t dataType = corrected & 0x0F;
+
+        if (slot == 0) {
+            dmr_status.dmr_status_s0_cc = cc;
+            dmr_status.dmr_status_s0_lastburstt = dataType;
+            dmr_status.dmr_status_s0_lasttype = dmrDataTypeName(dataType);
+        } else {
+            dmr_status.dmr_status_s1_cc = cc;
+            dmr_status.dmr_status_s1_lastburstt = dataType;
+            dmr_status.dmr_status_s1_lasttype = dmrDataTypeName(dataType);
+        }
+
+        // Log only on change, not once per burst (a burst comes in every
+        // ~30ms per slot even when idle).
+        if (cc != dmrLoggedCC[slot]) {
+            dmrLoggedCC[slot] = cc;
+            flog::info("DMR slot{} CC {}", slot, cc);
         }
     }
 

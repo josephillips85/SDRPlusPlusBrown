@@ -49,7 +49,8 @@ namespace demod {
             bool dmr = false;
             bool voice = false;
             bool mbe_decoding = false;
-            uint8_t color_code = 0;
+            uint8_t color_code0 = 0;
+            uint8_t color_code1 = 0;
             uint8_t slot0_burst = 0;
             uint8_t slot1_burst = 0;
             std::string slot0_type = "";
@@ -117,7 +118,8 @@ namespace demod {
             st.dmr = (fr_st.lasttype == dsp::NewDSD::Frame_status::LAST_DMR);
             st.mbe_decoding = mbe_st.mbe_status_decoding;
             st.voice = st.dmr && st.sync && st.mbe_decoding;
-            st.color_code = dmr_st.dmr_status_cc;
+            st.color_code0 = dmr_st.dmr_status_s0_cc;
+            st.color_code1 = dmr_st.dmr_status_s1_cc;
             st.slot0_burst = dmr_st.dmr_status_s0_lastburstt;
             st.slot1_burst = dmr_st.dmr_status_s1_lastburstt;
             st.slot0_type = dmr_st.dmr_status_s0_lasttype;
@@ -256,7 +258,10 @@ namespace demod {
                 dsp::NewDSD::DMR_status dmr_st = decoder.getDMRStatus();
                 ImGui::Text("SLOT0: (%02d) %s", dmr_st.dmr_status_s0_lastburstt, dmr_st.dmr_status_s0_lasttype.c_str());
                 ImGui::Text("SLOT1: (%02d) %s", dmr_st.dmr_status_s1_lastburstt, dmr_st.dmr_status_s1_lasttype.c_str());
-                ImGui::Text("CC: 0x%02x %02x", dmr_st.dmr_status_s1_lastburstt, dmr_st.dmr_status_cc);
+                ImGui::Text("CC0: %u   CC1: %u", dmr_st.dmr_status_s0_cc, dmr_st.dmr_status_s1_cc);
+                if (dmr_st.dmr_status_s0_cc != dmr_st.dmr_status_s1_cc) {
+                    ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.2f, 1.0f), "CC mismatch between slots (co-channel interference?)");
+                }
                 if (dmr_st.dmr_status_s0_lc_valid) {
                     if (dmr_st.dmr_status_s0_group) {
                         ImGui::Text("TG0: %u (src %u)", dmr_st.dmr_status_s0_tgid, dmr_st.dmr_status_s0_srcid);

@@ -252,7 +252,8 @@ private:
                ",\"voice\":" + (st.voice ? "true" : "false") +
                ",\"mbe_decoding\":" + (st.mbe_decoding ? "true" : "false") +
                ",\"waited_ms\":" + std::to_string(waitedMs) +
-               ",\"color_code\":" + std::to_string(st.color_code) +
+               ",\"color_code0\":" + std::to_string(st.color_code0) +
+               ",\"color_code1\":" + std::to_string(st.color_code1) +
                ",\"slot0_burst\":" + std::to_string(st.slot0_burst) +
                ",\"slot1_burst\":" + std::to_string(st.slot1_burst) +
                ",\"slot0_type\":\"" + escapeJson(st.slot0_type) +
