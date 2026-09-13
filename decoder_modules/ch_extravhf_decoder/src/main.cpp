@@ -257,7 +257,15 @@ private:
                ",\"slot1_burst\":" + std::to_string(st.slot1_burst) +
                ",\"slot0_type\":\"" + escapeJson(st.slot0_type) +
                "\",\"slot1_type\":\"" + escapeJson(st.slot1_type) +
-               "\",\"mbe_errorbar\":\"" + escapeJson(st.mbe_errorbar) + "\"}";
+               "\",\"mbe_errorbar\":\"" + escapeJson(st.mbe_errorbar) +
+               "\",\"slot0_lc_valid\":" + (st.slot0_lc_valid ? "true" : "false") +
+               ",\"slot0_group\":" + (st.slot0_group ? "true" : "false") +
+               ",\"slot0_tgid\":" + std::to_string(st.slot0_tgid) +
+               ",\"slot0_srcid\":" + std::to_string(st.slot0_srcid) +
+               ",\"slot1_lc_valid\":" + (st.slot1_lc_valid ? "true" : "false") +
+               ",\"slot1_group\":" + (st.slot1_group ? "true" : "false") +
+               ",\"slot1_tgid\":" + std::to_string(st.slot1_tgid) +
+               ",\"slot1_srcid\":" + std::to_string(st.slot1_srcid) + "}";
     }
 
     static void menuHandler(void* ctx) {

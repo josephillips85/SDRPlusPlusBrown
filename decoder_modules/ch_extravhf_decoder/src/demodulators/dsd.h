@@ -55,6 +55,14 @@ namespace demod {
             std::string slot0_type = "";
             std::string slot1_type = "";
             std::string mbe_errorbar = "";
+            bool slot0_lc_valid = false;
+            bool slot1_lc_valid = false;
+            bool slot0_group = true;
+            bool slot1_group = true;
+            uint32_t slot0_tgid = 0;
+            uint32_t slot1_tgid = 0;
+            uint32_t slot0_srcid = 0;
+            uint32_t slot1_srcid = 0;
         };
 
         DSD() {}
@@ -115,6 +123,14 @@ namespace demod {
             st.slot0_type = dmr_st.dmr_status_s0_lasttype;
             st.slot1_type = dmr_st.dmr_status_s1_lasttype;
             st.mbe_errorbar = mbe_st.mbe_status_errorbar;
+            st.slot0_lc_valid = dmr_st.dmr_status_s0_lc_valid;
+            st.slot1_lc_valid = dmr_st.dmr_status_s1_lc_valid;
+            st.slot0_group = dmr_st.dmr_status_s0_group;
+            st.slot1_group = dmr_st.dmr_status_s1_group;
+            st.slot0_tgid = dmr_st.dmr_status_s0_tgid;
+            st.slot1_tgid = dmr_st.dmr_status_s1_tgid;
+            st.slot0_srcid = dmr_st.dmr_status_s0_srcid;
+            st.slot1_srcid = dmr_st.dmr_status_s1_srcid;
             return st;
         }
 
@@ -241,6 +257,24 @@ namespace demod {
                 ImGui::Text("SLOT0: (%02d) %s", dmr_st.dmr_status_s0_lastburstt, dmr_st.dmr_status_s0_lasttype.c_str());
                 ImGui::Text("SLOT1: (%02d) %s", dmr_st.dmr_status_s1_lastburstt, dmr_st.dmr_status_s1_lasttype.c_str());
                 ImGui::Text("CC: 0x%02x %02x", dmr_st.dmr_status_s1_lastburstt, dmr_st.dmr_status_cc);
+                if (dmr_st.dmr_status_s0_lc_valid) {
+                    if (dmr_st.dmr_status_s0_group) {
+                        ImGui::Text("TG0: %u (src %u)", dmr_st.dmr_status_s0_tgid, dmr_st.dmr_status_s0_srcid);
+                    } else {
+                        ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f), "TG0: DIRECT -> %u (src %u)", dmr_st.dmr_status_s0_tgid, dmr_st.dmr_status_s0_srcid);
+                    }
+                } else {
+                    ImGui::Text("TG0: -");
+                }
+                if (dmr_st.dmr_status_s1_lc_valid) {
+                    if (dmr_st.dmr_status_s1_group) {
+                        ImGui::Text("TG1: %u (src %u)", dmr_st.dmr_status_s1_tgid, dmr_st.dmr_status_s1_srcid);
+                    } else {
+                        ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f), "TG1: DIRECT -> %u (src %u)", dmr_st.dmr_status_s1_tgid, dmr_st.dmr_status_s1_srcid);
+                    }
+                } else {
+                    ImGui::Text("TG1: -");
+                }
                 if (!fr_st.sync) {
                     style::endDisabled();
                 }

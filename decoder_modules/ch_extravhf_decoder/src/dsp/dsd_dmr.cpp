@@ -20,7 +20,14 @@ namespace dsp {
                     currentslot = (1 & (dibit >> 1));      // bit 1
                 }
             }
-            dmr_dibitBuffP += 49;
+            // Data 1 (first half of the BPTC(196,96)-coded payload, used by
+            // the Voice LC Header / Terminator LC bursts to carry the
+            // talkgroup/source info of the call)
+            for (int i = 0; i < 49; i++) {
+                int d = dibitBuf[dmr_dibitBuffP++];
+                dmrlc_bits[(i * 2)]     = (1 & (d >> 1)); // bit 1
+                dmrlc_bits[(i * 2) + 1] = (1 & d);        // bit 0
+            }
             int dibit = dibitBuf[dmr_dibitBuffP++];
             cc |= ((1 & (dibit >> 1))) << 0; //bit1
             cc |= (1 & dibit) << 1;     // bit 0
@@ -70,6 +77,20 @@ namespace dsp {
                 ((currentslot == 0) ? dmr_status.dmr_status_s0_lasttype : dmr_status.dmr_status_s1_lasttype) = "UNK";
             }
 
+            // Voice LC Header and Terminator-with-LC carry the talkgroup /
+            // source info (Full Link Control) in their Data1+Data2 payload.
+            if (strcmp (bursttype, "0001") == 0) {
+                dmrlc_pending = true;
+                dmrlc_dtype = 1;
+                dmrlc_slot = currentslot;
+            } else if (strcmp (bursttype, "0010") == 0) {
+                dmrlc_pending = true;
+                dmrlc_dtype = 2;
+                dmrlc_slot = currentslot;
+            } else {
+                dmrlc_pending = false;
+            }
+
             for (int i = 0; i < 24; i++) {
                 dibit = dibitBuf[dmr_dibitBuffP++] | 0b01;
                 syncdata[i] = dibit;
@@ -77,6 +98,12 @@ namespace dsp {
             }
             sync[24] = 0;
             syncdata[24] = 0;
+
+            // dmr_dibitBuffP now sits right after the sync field, i.e. right
+            // before the second Slot Type half + Data2, which haven't
+            // streamed in yet. Remember the position so we can pick them up
+            // once STATE_PROC_FRAME_DMR_DATA_1 has buffered them.
+            dmrlc_afterSyncPos = dmr_dibitBuffP;
 
             curr_state = STATE_PROC_FRAME_DMR_DATA_1;
             skipCtr = 0;
@@ -90,12 +117,181 @@ namespace dsp {
                 usedDibits++;
                 skipCtr++;
                 if(skipCtr == 120) {
+                    if (dmrlc_pending) {
+                        // Skip the 5 remaining dibits (10 bits) of the mirrored
+                        // Slot Type field, then read Data2 (49 dibits = 98 bits).
+                        for (int k = 0; k < 49; k++) {
+                            int d = dibitBuf[dmrlc_afterSyncPos + 5 + k];
+                            dmrlc_bits[98 + (k * 2)]     = (1 & (d >> 1)); // bit 1
+                            dmrlc_bits[98 + (k * 2) + 1] = (1 & d);       // bit 0
+                        }
+                        processDMRFullLC(dmrlc_dtype, dmrlc_slot);
+                        dmrlc_pending = false;
+                    }
                     curr_state = STATE_SYNC;
                     break;
                 }
             }
         }
         return usedDibits;
+    }
+
+    // ---- DMR Full Link Control decode (BPTC(196,96)) ----
+    // Adapted from the publicly documented BPTC(196,96)/Hamming(15,11,3)/
+    // Hamming(13,9,3) algorithm used by DMR (ETSI TS 102 361-1), following
+    // the same structure as MMDVM's CBPTC19696/CHamming.
+
+    bool NewDSD::dmrHamming15113Decode(bool* d) {
+        bool c0 = d[0] ^ d[1] ^ d[2] ^ d[3] ^ d[5] ^ d[7] ^ d[8];
+        bool c1 = d[1] ^ d[2] ^ d[3] ^ d[4] ^ d[6] ^ d[8] ^ d[9];
+        bool c2 = d[2] ^ d[3] ^ d[4] ^ d[5] ^ d[7] ^ d[9] ^ d[10];
+        bool c3 = d[0] ^ d[1] ^ d[2] ^ d[4] ^ d[6] ^ d[7] ^ d[10];
+
+        uint8_t n = 0;
+        n |= (c0 != d[11]) ? 0x01 : 0x00;
+        n |= (c1 != d[12]) ? 0x02 : 0x00;
+        n |= (c2 != d[13]) ? 0x04 : 0x00;
+        n |= (c3 != d[14]) ? 0x08 : 0x00;
+
+        switch (n) {
+            case 0x01: d[11] = !d[11]; return true;
+            case 0x02: d[12] = !d[12]; return true;
+            case 0x04: d[13] = !d[13]; return true;
+            case 0x08: d[14] = !d[14]; return true;
+            case 0x09: d[0]  = !d[0];  return true;
+            case 0x0B: d[1]  = !d[1];  return true;
+            case 0x0F: d[2]  = !d[2];  return true;
+            case 0x07: d[3]  = !d[3];  return true;
+            case 0x0E: d[4]  = !d[4];  return true;
+            case 0x05: d[5]  = !d[5];  return true;
+            case 0x0A: d[6]  = !d[6];  return true;
+            case 0x0D: d[7]  = !d[7];  return true;
+            case 0x03: d[8]  = !d[8];  return true;
+            case 0x06: d[9]  = !d[9];  return true;
+            case 0x0C: d[10] = !d[10]; return true;
+            default: return false;
+        }
+    }
+
+    bool NewDSD::dmrHamming1393Decode(bool* d) {
+        bool c0 = d[0] ^ d[1] ^ d[3] ^ d[5] ^ d[6];
+        bool c1 = d[0] ^ d[1] ^ d[2] ^ d[4] ^ d[6] ^ d[7];
+        bool c2 = d[0] ^ d[1] ^ d[2] ^ d[3] ^ d[5] ^ d[7] ^ d[8];
+        bool c3 = d[0] ^ d[2] ^ d[4] ^ d[5] ^ d[8];
+
+        uint8_t n = 0;
+        n |= (c0 != d[9])  ? 0x01 : 0x00;
+        n |= (c1 != d[10]) ? 0x02 : 0x00;
+        n |= (c2 != d[11]) ? 0x04 : 0x00;
+        n |= (c3 != d[12]) ? 0x08 : 0x00;
+
+        switch (n) {
+            case 0x01: d[9]  = !d[9];  return true;
+            case 0x02: d[10] = !d[10]; return true;
+            case 0x04: d[11] = !d[11]; return true;
+            case 0x08: d[12] = !d[12]; return true;
+            case 0x0F: d[0] = !d[0]; return true;
+            case 0x07: d[1] = !d[1]; return true;
+            case 0x0E: d[2] = !d[2]; return true;
+            case 0x05: d[3] = !d[3]; return true;
+            case 0x0A: d[4] = !d[4]; return true;
+            case 0x0D: d[5] = !d[5]; return true;
+            case 0x03: d[6] = !d[6]; return true;
+            case 0x06: d[7] = !d[7]; return true;
+            case 0x0C: d[8] = !d[8]; return true;
+            default: return false;
+        }
+    }
+
+    // Deinterleave the 196 raw bits, run the row/column Hamming error
+    // correction, and extract the resulting 96 bits (12 bytes) of payload.
+    void NewDSD::dmrBptcDecode(const bool* rawBits, uint8_t* out) {
+        bool deInter[196];
+        for (int a = 0; a < 196; a++) {
+            int interleaveSequence = (a * 181) % 196;
+            deInter[a] = rawBits[interleaveSequence];
+        }
+
+        bool fixing;
+        int count = 0;
+        do {
+            fixing = false;
+            bool col[13];
+            for (int c = 0; c < 15; c++) {
+                int pos = c + 1;
+                for (int a = 0; a < 13; a++) {
+                    col[a] = deInter[pos];
+                    pos += 15;
+                }
+                if (dmrHamming1393Decode(col)) {
+                    pos = c + 1;
+                    for (int a = 0; a < 13; a++) {
+                        deInter[pos] = col[a];
+                        pos += 15;
+                    }
+                    fixing = true;
+                }
+            }
+            for (int r = 0; r < 9; r++) {
+                int pos = (r * 15) + 1;
+                if (dmrHamming15113Decode(deInter + pos)) {
+                    fixing = true;
+                }
+            }
+            count++;
+        } while (fixing && count < 5);
+
+        bool bData[96];
+        int pos = 0;
+        static const int ranges[9][2] = {
+            {4, 11}, {16, 26}, {31, 41}, {46, 56}, {61, 71}, {76, 86}, {91, 101}, {106, 116}, {121, 131}
+        };
+        for (int r = 0; r < 9; r++) {
+            for (int a = ranges[r][0]; a <= ranges[r][1]; a++, pos++) {
+                bData[pos] = deInter[a];
+            }
+        }
+        for (int i = 0; i < 12; i++) {
+            uint8_t b = 0;
+            for (int bi = 0; bi < 8; bi++) {
+                b = (b << 1) | (bData[(i * 8) + bi] ? 1 : 0);
+            }
+            out[i] = b;
+        }
+    }
+
+    // Decode a Voice LC Header (dtype==1) or Terminator-with-LC (dtype==2)
+    // burst's payload into the talkgroup/private-call and source id fields.
+    // NOTE: the RS(12,9) parity carried in lc[9..11] is not checked here, so
+    // this is a best-effort decode (consistent with the rest of this file,
+    // which also doesn't verify the Slot Type's Golay(20,8) parity).
+    void NewDSD::processDMRFullLC(int dtype, int slot) {
+        uint8_t lc[12];
+        dmrBptcDecode(dmrlc_bits, lc);
+
+        uint8_t flco = lc[0] & 0x3F;
+        bool group = (flco == 0x00); // FLCO Group Voice Channel User
+        bool priv  = (flco == 0x03); // FLCO Unit to Unit (private/direct call)
+        if (!group && !priv) {
+            // Talker alias, GPS info or other LC subtype - not a call setup,
+            // leave the previously known talkgroup/source alone.
+            return;
+        }
+
+        uint32_t dst = ((uint32_t)lc[3] << 16) | ((uint32_t)lc[4] << 8) | lc[5];
+        uint32_t src = ((uint32_t)lc[6] << 16) | ((uint32_t)lc[7] << 8) | lc[8];
+
+        if (slot == 0) {
+            dmr_status.dmr_status_s0_lc_valid = true;
+            dmr_status.dmr_status_s0_group = group;
+            dmr_status.dmr_status_s0_tgid = dst;
+            dmr_status.dmr_status_s0_srcid = src;
+        } else {
+            dmr_status.dmr_status_s1_lc_valid = true;
+            dmr_status.dmr_status_s1_group = group;
+            dmr_status.dmr_status_s1_tgid = dst;
+            dmr_status.dmr_status_s1_srcid = src;
+        }
     }
 
     const int NewDSD::dmrv_const_rW[] = {
